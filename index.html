@@ -594,6 +594,19 @@ function analyzeConflict(day,candidate,ignoreId,actor='user'){
   return{hasConflict:true,level,actor,action:hasHard?'blocked_for_auto':'warn',conflicts};
 }
 
+
+// Einheitlicher User-Flow: warnen/bestätigen statt still blocken.
+function applyUserConflictDecision(result,verb){
+  if(!result||result.action==='allow')return true;
+  if(result.action==='confirm'){
+    const ok=confirm(`Konflikt mit Arbeit/Termin erkannt. Trotzdem ${verb}?`);
+    if(ok)toast('Konflikt mit Arbeit/Termin erkannt.');
+    return ok;
+  }
+  if(result.action==='warn')toast('Kollision erkannt.');
+  return true;
+}
+
 function calcKcal(w,h,age,sex,goals,level,mealMode){
   // Mifflin-St Jeor — sex-specific
   const sexOffset={male:5,female:-161,other:-78}[sex]??-78;
@@ -1278,13 +1291,7 @@ function wcUp(){
     const targetDay=tl.days.find(d=>d.date===newDate);
     const candidate=normalizeBlock({...block,startTime:m2t(sm),endTime:m2t(em),date:newDate},block.source||'manual');
     const result=analyzeConflict(targetDay,candidate,block.id,'user');
-    if(result.action==='confirm'){
-      const ok=confirm('Konflikt mit Arbeit/Termin erkannt. Trotzdem verschieben?');
-      if(!ok){wcd=null;renderWeekView(tl.days,todayISO());return;}
-      toast('Konflikt mit Arbeit/Termin erkannt.');
-    }else if(result.action==='warn'){
-      toast('Kollision erkannt.');
-    }
+    if(!applyUserConflictDecision(result,'verschieben')){wcd=null;renderWeekView(tl.days,todayISO());return;}
     block.startTime=m2t(sm);block.endTime=m2t(em);
     if(newDate!==origDate){
       origDay.blocks=origDay.blocks.filter(b=>b.id!==origId);
@@ -1332,13 +1339,7 @@ function saveBlockTime(){
   if(t2m(ne)<=t2m(ns)){toast('Ende muss nach Start liegen');return;}
   const candidate=normalizeBlock({...block,startTime:ns,endTime:ne},block.source||'manual');
   const result=analyzeConflict(day,candidate,block.id,'user');
-  if(result.action==='confirm'){
-    const ok=confirm('Konflikt mit Arbeit/Termin erkannt. Trotzdem speichern?');
-    if(!ok)return;
-    toast('Konflikt mit Arbeit/Termin erkannt.');
-  }else if(result.action==='warn'){
-    toast('Kollision erkannt.');
-  }
+  if(!applyUserConflictDecision(result,'speichern'))return;
   block.startTime=ns;block.endTime=ne;
   day.blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
   save();closeModal('modal-edit-time');renderTimeline();
@@ -1353,7 +1354,12 @@ function editBlockDuration(){
   const cur=tdiff(block.startTime,block.endTime);
   const mins=prompt(`Aktuelle Dauer: ${cur} Min.\nNeue Dauer in Minuten:`,''+cur);
   if(!mins||isNaN(parseInt(mins)))return;
-  block.endTime=addMin(block.startTime,parseInt(mins));
+  const newEnd=addMin(block.startTime,parseInt(mins));
+  if(t2m(newEnd)<=t2m(block.startTime)){toast('Dauer ungültig');return;}
+  const candidate=normalizeBlock({...block,endTime:newEnd},block.source||'manual');
+  const result=analyzeConflict(day,candidate,block.id,'user');
+  if(!applyUserConflictDecision(result,'speichern'))return;
+  block.endTime=newEnd;
   day.blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
   save();renderTimeline();toast('Dauer angepasst ✓');
 }
@@ -1395,13 +1401,7 @@ function submitAddBlock(){
   if(dayIdx>=0){
     const day=tl.days[dayIdx];
     const result=analyzeConflict(day,block,null,'user');
-    if(result.action==='confirm'){
-      const ok=confirm('Konflikt mit Arbeit/Termin erkannt. Trotzdem hinzufügen?');
-      if(!ok)return;
-      toast('Konflikt mit Arbeit/Termin erkannt.');
-    }else if(result.action==='warn'){
-      toast('Kollision erkannt.');
-    }
+    if(!applyUserConflictDecision(result,'hinzufügen'))return;
     day.blocks.push(block);day.blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
   }
   save();closeModal('modal-add');renderTimeline();
