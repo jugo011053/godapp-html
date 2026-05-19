@@ -551,20 +551,23 @@ const TYPE_SHORTMODE = {
   prep:{available:true,duration:60},training:{available:true,duration:40},boxing:{available:true,duration:45},rehab:{available:true,duration:20},
   mobility:{available:true,duration:20},yoga:{available:true,duration:20}
 };
+// appointment ist standardmäßig auto-protected (gegen Auto-Moves), User darf weiter manuell verschieben.
+const AUTO_PROTECTED_TYPES = new Set(['appointment']);
 
 function normalizeBlock(b,source='timeline-auto'){
   const sm=t2m(b.startTime),em=t2m(b.endTime);
   const pr=b.priority??TYPE_PRIORITY[b.type]??5;
   const smCfg=TYPE_SHORTMODE[b.type]||null;
+  const type=b.type||'other';
   return {
     id:b.id||uid(),
-    type:b.type||'other',
-    title:b.title||BLOCK_LABELS[b.type]||'Block',
+    type,
+    title:b.title||BLOCK_LABELS[type]||'Block',
     startTime:b.startTime,
     endTime:em>sm?b.endTime:addMin(b.startTime,30),
     date:b.date,
     priority:pr,
-    locked:b.locked===true,
+    locked:b.locked??AUTO_PROTECTED_TYPES.has(type),
     shortModeAvailable:b.shortModeAvailable??Boolean(smCfg?.available),
     shortModeDurationMin:b.shortModeDurationMin??(smCfg?.duration??null),
     status:b.status||'planned',
