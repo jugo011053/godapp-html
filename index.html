@@ -544,6 +544,69 @@ function findFreeSlot(occ,dur,early,late){
   return null;
 }
 
+
+// Prioritäts-Defaults + Block-Normalisierung als zentrale Timeline-Wahrheit
+const TYPE_PRIORITY = {work:1,appointment:1,shopping:2,prep:3,training:4,boxing:4,rehab:4,mobility:5,yoga:5,other:5};
+const TYPE_SHORTMODE = {
+  prep:{available:true,duration:60},training:{available:true,duration:40},boxing:{available:true,duration:45},rehab:{available:true,duration:20},
+  mobility:{available:true,duration:20},yoga:{available:true,duration:20}
+};
+// appointment ist standardmäßig auto-protected (gegen Auto-Moves), User darf weiter manuell verschieben.
+const AUTO_PROTECTED_TYPES = new Set(['appointment']);
+
+function normalizeBlock(b,source='timeline-auto'){
+  const sm=t2m(b.startTime),em=t2m(b.endTime);
+  const pr=b.priority??TYPE_PRIORITY[b.type]??5;
+  const smCfg=TYPE_SHORTMODE[b.type]||null;
+  const type=b.type||'other';
+  return {
+    id:b.id||uid(),
+    type,
+    title:b.title||BLOCK_LABELS[type]||'Block',
+    startTime:b.startTime,
+    endTime:em>sm?b.endTime:addMin(b.startTime,30),
+    date:b.date,
+    priority:pr,
+    locked:b.locked??AUTO_PROTECTED_TYPES.has(type),
+    shortModeAvailable:b.shortModeAvailable??Boolean(smCfg?.available),
+    shortModeDurationMin:b.shortModeDurationMin??(smCfg?.duration??null),
+    status:b.status||'planned',
+    source:b.source||source,
+    notes:b.notes||''
+  };
+}
+
+function overlaps(a,b){return t2m(a.startTime)<t2m(b.endTime)&&t2m(a.endTime)>t2m(b.startTime);}
+function getDayConflicts(day,candidate,ignoreId){
+  if(!day)return[];
+  return (day.blocks||[]).filter(b=>b.id!==ignoreId&&overlaps(b,candidate));
+}
+
+// locked = Schutz vor AUTOMATISCHER Verschiebung, nicht vor User-Aktionen.
+function analyzeConflict(day,candidate,ignoreId,actor='user'){
+  const conflicts=getDayConflicts(day,candidate,ignoreId);
+  if(!conflicts.length)return{hasConflict:false,level:'none',actor,action:'allow',conflicts:[]};
+  const hasHard=conflicts.some(b=>b.priority===1||b.locked===true);
+  const level=hasHard?'hard':'soft';
+  if(actor==='user'){
+    return{hasConflict:true,level,actor,action:hasHard?'confirm':'warn',conflicts};
+  }
+  return{hasConflict:true,level,actor,action:hasHard?'blocked_for_auto':'warn',conflicts};
+}
+
+
+// Einheitlicher User-Flow: warnen/bestätigen statt still blocken.
+function applyUserConflictDecision(result,verb){
+  if(!result||result.action==='allow')return true;
+  if(result.action==='confirm'){
+    const ok=confirm(`Konflikt mit Arbeit/Termin erkannt. Trotzdem ${verb}?`);
+    if(ok)toast('Konflikt mit Arbeit/Termin erkannt.');
+    return ok;
+  }
+  if(result.action==='warn')toast('Kollision erkannt.');
+  return true;
+}
+
 function calcKcal(w,h,age,sex,goals,level,mealMode){
   // Mifflin-St Jeor — sex-specific
   const sexOffset={male:5,female:-161,other:-78}[sex]??-78;
@@ -791,7 +854,7 @@ function buildTimeline(weekStart,profile,mealCycle,trainingWeek){
 
     if(isWork){
       occ.push({start:wsMin,end:weMin});
-      blocks.push({id:uid(),type:'work',title:'Arbeit',startTime:m2t(wsMin),endTime:m2t(weMin),status:'planned',date,priority:1});
+      blocks.push(normalizeBlock({id:uid(),type:'work',title:'Arbeit',startTime:m2t(wsMin),endTime:m2t(weMin),status:'planned',date,locked:true,source:'timeline-auto'}));
     }
 
     // External boxing sessions on this day
@@ -802,7 +865,7 @@ function buildTimeline(weekStart,profile,mealCycle,trainingWeek){
       const st=ext?t2m(ext.start):isWork?weMin+buf:wakeMin+60;
       const en=ext?t2m(ext.end):st+t2m('01:30');
       occ.push({start:st,end:en});
-      blocks.push({id:uid(),type:'boxing',title:slot.name,startTime:m2t(st),endTime:m2t(en),status:'planned',date,priority:2});
+      blocks.push(normalizeBlock({id:uid(),type:'boxing',title:slot.name,startTime:m2t(st),endTime:m2t(en),status:'planned',date,source:'training-week'}));
     });
 
     // Regular training
@@ -813,7 +876,12 @@ function buildTimeline(weekStart,profile,mealCycle,trainingWeek){
       let ts=null;
       if(pref==='morning')ts=findFreeSlot(occ,slot.durationMin,wakeMin+MORNING_BUF,isWork?wsMin-30:sleepMin);
       if(!ts)ts=findFreeSlot(occ,slot.durationMin,isWork?weMin+buf:wakeMin+MORNING_BUF,sleepMin-30);
-      if(ts){occ.push(ts);blocks.push({id:uid(),type:'training',title:slot.name,startTime:m2t(ts.start),endTime:m2t(ts.end),status:'planned',date,priority:2});}
+      if(ts){occ.push(ts);blocks.push(normalizeBlock({id:uid(),type:'training',title:slot.name,startTime:m2t(ts.start),endTime:m2t(ts.end),status:'planned',date,source:'training-week'}));}
+      else{
+        const shortDur=TYPE_SHORTMODE.training.duration;
+        const shortTs=findFreeSlot(occ,shortDur,isWork?weMin+buf:wakeMin+MORNING_BUF,sleepMin-30);
+        if(shortTs){occ.push(shortTs);blocks.push(normalizeBlock({id:uid(),type:'training',title:slot.name+' (Kurzmodus)',startTime:m2t(shortTs.start),endTime:m2t(shortTs.end),status:'planned',date,source:'training-week',shortModeAvailable:true,shortModeDurationMin:shortDur,notes:'Automatisch im Kurzmodus platziert'}));}
+      }
     });
 
     // Rehab sessions
@@ -822,14 +890,19 @@ function buildTimeline(weekStart,profile,mealCycle,trainingWeek){
       // Try morning first as warmup, then evening
       let rs=findFreeSlot(occ,slot.durationMin,wakeMin+MORNING_BUF,isWork?wsMin-15:sleepMin);
       if(!rs)rs=findFreeSlot(occ,slot.durationMin,isWork?weMin+buf:wakeMin+MORNING_BUF,sleepMin-30);
-      if(rs){occ.push(rs);blocks.push({id:uid(),type:'rehab',title:'Rehab',startTime:m2t(rs.start),endTime:m2t(rs.end),status:'planned',date,priority:2});}
+      if(rs){occ.push(rs);blocks.push(normalizeBlock({id:uid(),type:'rehab',title:'Rehab',startTime:m2t(rs.start),endTime:m2t(rs.end),status:'planned',date,source:'training-week'}));}
     });
 
     // Meal prep
     const isPrep=mealCycle?.blockA?.prepDate===date||mealCycle?.blockB?.prepDate===date;
     if(isPrep){
       const ps=findFreeSlot(occ,90,isWork?weMin+buf:wakeMin+60,sleepMin-30);
-      if(ps){occ.push(ps);blocks.push({id:uid(),type:'prep',title:'Meal Prep',startTime:m2t(ps.start),endTime:m2t(ps.end),status:'planned',date,priority:3});}
+      if(ps){occ.push(ps);blocks.push(normalizeBlock({id:uid(),type:'prep',title:'Meal Prep',startTime:m2t(ps.start),endTime:m2t(ps.end),status:'planned',date,source:'meal-cycle'}));}
+      else{
+        const shortDur=TYPE_SHORTMODE.prep.duration;
+        const shortPs=findFreeSlot(occ,shortDur,isWork?weMin+buf:wakeMin+60,sleepMin-30);
+        if(shortPs){occ.push(shortPs);blocks.push(normalizeBlock({id:uid(),type:'prep',title:'Meal Prep (Kurzmodus)',startTime:m2t(shortPs.start),endTime:m2t(shortPs.end),status:'planned',date,source:'meal-cycle',shortModeAvailable:true,shortModeDurationMin:shortDur,notes:'Automatisch im Kurzmodus platziert'}));}
+      }
     }
 
     blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
@@ -1215,6 +1288,10 @@ function wcUp(){
   const origDay=tl.days.find(d=>d.date===origDate);
   const block=origDay?.blocks.find(b=>b.id===origId);
   if(block){
+    const targetDay=tl.days.find(d=>d.date===newDate);
+    const candidate=normalizeBlock({...block,startTime:m2t(sm),endTime:m2t(em),date:newDate},block.source||'manual');
+    const result=analyzeConflict(targetDay,candidate,block.id,'user');
+    if(!applyUserConflictDecision(result,'verschieben')){wcd=null;renderWeekView(tl.days,todayISO());return;}
     block.startTime=m2t(sm);block.endTime=m2t(em);
     if(newDate!==origDate){
       origDay.blocks=origDay.blocks.filter(b=>b.id!==origId);
@@ -1260,6 +1337,9 @@ function saveBlockTime(){
   const ns=document.getElementById('edit-start').value;
   const ne=document.getElementById('edit-end').value;
   if(t2m(ne)<=t2m(ns)){toast('Ende muss nach Start liegen');return;}
+  const candidate=normalizeBlock({...block,startTime:ns,endTime:ne},block.source||'manual');
+  const result=analyzeConflict(day,candidate,block.id,'user');
+  if(!applyUserConflictDecision(result,'speichern'))return;
   block.startTime=ns;block.endTime=ne;
   day.blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
   save();closeModal('modal-edit-time');renderTimeline();
@@ -1274,7 +1354,12 @@ function editBlockDuration(){
   const cur=tdiff(block.startTime,block.endTime);
   const mins=prompt(`Aktuelle Dauer: ${cur} Min.\nNeue Dauer in Minuten:`,''+cur);
   if(!mins||isNaN(parseInt(mins)))return;
-  block.endTime=addMin(block.startTime,parseInt(mins));
+  const newEnd=addMin(block.startTime,parseInt(mins));
+  if(t2m(newEnd)<=t2m(block.startTime)){toast('Dauer ungültig');return;}
+  const candidate=normalizeBlock({...block,endTime:newEnd},block.source||'manual');
+  const result=analyzeConflict(day,candidate,block.id,'user');
+  if(!applyUserConflictDecision(result,'speichern'))return;
+  block.endTime=newEnd;
   day.blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
   save();renderTimeline();toast('Dauer angepasst ✓');
 }
@@ -1310,10 +1395,15 @@ function submitAddBlock(){
   const end=document.getElementById('modal-end').value;
   if(t2m(end)<=t2m(start)){toast('Ende muss nach Start liegen');return;}
   const date=state.selectedDate||todayISO();
-  const block={id:uid(),type:modalBlockType,title,startTime:start,endTime:end,status:'planned',date,priority:5};
+  const block=normalizeBlock({id:uid(),type:modalBlockType,title,startTime:start,endTime:end,status:'planned',date,source:'manual'});
   const tl=state.timeline;if(!tl)return;
   const dayIdx=tl.days.findIndex(d=>d.date===date);
-  if(dayIdx>=0){tl.days[dayIdx].blocks.push(block);tl.days[dayIdx].blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));}
+  if(dayIdx>=0){
+    const day=tl.days[dayIdx];
+    const result=analyzeConflict(day,block,null,'user');
+    if(!applyUserConflictDecision(result,'hinzufügen'))return;
+    day.blocks.push(block);day.blocks.sort((a,b)=>a.startTime.localeCompare(b.startTime));
+  }
   save();closeModal('modal-add');renderTimeline();
   addXP(10,'Block hinzugefügt');
 }
