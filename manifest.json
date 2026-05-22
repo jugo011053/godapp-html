@@ -1,0 +1,24 @@
+{
+  "name": "D1 — Day One",
+  "short_name": "D1",
+  "description": "Dein persönlicher Tagesplaner für Training, Ernährung & Struktur",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0E1530",
+  "theme_color": "#F59E0B",
+  "orientation": "portrait-primary",
+  "categories": [
+    "health",
+    "fitness",
+    "lifestyle"
+  ],
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
