@@ -17,7 +17,11 @@ self.addEventListener('fetch', e => {
   if (e.request.mode !== 'navigate') return;
   e.respondWith(
     fetch(e.request)
-      .then(r => { caches.open(CACHE).then(c => c.put(e.request, r.clone())); return r; })
+      .then(r => {
+        const clone = r.clone();
+        caches.open(CACHE).then(c => c.put(e.request, clone));
+        return r;
+      })
       .catch(() => caches.match(e.request).then(r => r || caches.match('./')))
   );
 });
